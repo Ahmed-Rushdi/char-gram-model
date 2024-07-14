@@ -1,5 +1,8 @@
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
+
+torch.manual_seed(0)
 
 
 class GramModel:
@@ -44,21 +47,23 @@ class GramModel:
         Args:
             corpus (list): The corpus used to set the character set.
         """
-
+        print("Generating alphabet")
         self.charset = ["."] + sorted(list(set("".join(corpus))))
         self.itos_out = {k: v for k, v in enumerate(self.charset)}
         self.stoi_out = {v: k for k, v in self.itos_out.items()}
+        print("alphabet Generated", flush=True)
 
     def _set_mappings(self):
         """
         Set the mappings between input and output characters.
         """
-
+        print("Generating mappings")
         input_chars = self.charset
         for i in range(self.n - 2):
             input_chars = [x + y for x in input_chars for y in self.charset]
         self.stoi_in = {k: v for v, k in enumerate(sorted(input_chars))}
         self.itos_in = {v: k for k, v in self.stoi_in.items()}
+        print("Mappings generated", flush=True)
 
     def _get_ngrams(self, corpus: list):
         """
@@ -70,7 +75,7 @@ class GramModel:
         Returns:
             list: The list of n-grams.
         """
-
+        print("Generatng n-grams")
         ngrams = []
         for word in corpus:
             word = "." * self.n + word + "."
@@ -80,6 +85,7 @@ class GramModel:
                     for c in range(len(word) - self.n + 1)
                 ]
             )
+        print(f"NGrams of length {len(ngrams)} Generated", flush=True)
         return ngrams
 
     def _set_w_from_counts(self, ngrams: list, smooth_factor: float):
@@ -92,16 +98,16 @@ class GramModel:
         """
 
         self.W.data += smooth_factor
-        for gram in ngrams:
+        for gram in tqdm(ngrams, desc="Counting grams.."):
             inp_i = self.stoi_in[gram[0]]
             outp_i = self.stoi_out[gram[1]]
             self.W[inp_i, outp_i].data += 1
         probs = self.W / self.W.sum(1, keepdim=True)
-        nll = torch.tensor(0)
-        for gram in ngrams:
+        nll = torch.tensor(0.0)
+        for gram in tqdm(ngrams, desc="calculating loss.."):
             inp_i = self.stoi_in[gram[0]]
             outp_i = self.stoi_out[gram[1]]
-            nll += self.W[inp_i, outp_i].log()
+            nll += probs[inp_i, outp_i].log()
         nll /= len(ngrams)
         nll *= -1
         self.loss = nll
@@ -122,16 +128,16 @@ class GramModel:
         x_tensor = torch.tensor([self.stoi_in[x] for x in x_data])
         y_tensor = torch.tensor([self.stoi_out[y] for y in y_data])
         X = F.one_hot(x_tensor).float()
-        y = F.one_hot(y_tensor).float()
+        # y = F.one_hot(y_tensor).float()
         loss = None
         for i in range(epochs):
             probs = self._nn_forward(X)
-            loss = -(probs[X, y]).log().mean()
+            loss = -(probs[x_tensor, y_tensor]).log().mean()
             self.W.grad = None
             loss.backward()
             self.W.data += -lr * self.W.grad
             if verbose:
-                print(f"Epoch {i}: loss\t{loss}")
+                print(f"Epoch {i+1}: loss\t{loss}")
         self.loss = loss
 
     def _nn_forward(self, X: torch.Tensor):
@@ -172,15 +178,19 @@ class GramModel:
         self._set_alphabet(corpus)
         self._set_mappings()
         ngrams = self._get_ngrams(corpus)
-        self.W = torch.zeros(
-            size=(len(self.itos_in), len(self.itos_out)),
-            dtype=torch.float,
-            requires_grad=True,
-        )
-
         if self._method == "counts":
+            self.W = torch.zeros(
+                size=(len(self.itos_in), len(self.itos_out)),
+                dtype=torch.float,
+                requires_grad=True,
+            )
             self._set_w_from_counts(ngrams, smooth_factor)
         elif self._method == "nn":
+            self.W = torch.randn(
+                size=(len(self.itos_in), len(self.itos_out)),
+                dtype=torch.float,
+                requires_grad=True,
+            )
             self._train_w_nn(ngrams, epochs, lr, verbose)
         print(f"Here's the loss: {self.loss}")
         if verbose:
