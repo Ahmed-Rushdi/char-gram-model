@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-torch.manual_seed(767)
+# torch.manual_seed(0)
 
 
 class GramModel:
@@ -78,7 +78,10 @@ class GramModel:
         print("Generatng n-grams")
         ngrams = []
         for word in corpus:
-            word = "." * self.n + word + "."
+            word = "." * (self.n - 1) + word + "."
+            # print(word)
+            # print([(word[c : c + self.n - 1], word[c + self.n - 1])
+            #         for c in range(len(word) - self.n + 1)])
             ngrams.extend(
                 [
                     (word[c : c + self.n - 1], word[c + self.n - 1])
@@ -86,6 +89,7 @@ class GramModel:
                 ]
             )
         print(f"NGrams of length {len(ngrams)} Generated", flush=True)
+
         return ngrams
 
     def _set_w_from_counts(self, ngrams: list, smooth_factor: float):
@@ -98,9 +102,11 @@ class GramModel:
         """
 
         self.W.data += smooth_factor
-        for gram in tqdm(ngrams, desc="Counting grams.."):
+        for k, gram in tqdm(enumerate(ngrams), desc="Counting grams.."):
             inp_i = self.stoi_in[gram[0]]
             outp_i = self.stoi_out[gram[1]]
+            # if inp_i == 0 and outp_i == 0:
+            # print(f"{gram=} {k=}")
             self.W[inp_i, outp_i].data += 1
         probs = self.W / self.W.sum(1, keepdim=True)
         nll = torch.tensor(0.0)
@@ -111,9 +117,11 @@ class GramModel:
         nll /= len(ngrams)
         nll *= -1
         self.loss = nll
+        # print(self.W)
         self.W = self.W.log()
+        # print(self.W)
 
-    def _train_w_nn(self, ngrams: list, epochs: int, lr: float, verbose=1):
+    def _train_w_nn(self, ngrams: list, epochs: int, lr: float, beta: float, verbose=1):
         """
         Train the model using a neural network approach.
 
@@ -127,18 +135,22 @@ class GramModel:
         x_data, y_data = map(list, zip(*ngrams))
         x_tensor = torch.tensor([self.stoi_in[x] for x in x_data])
         y_tensor = torch.tensor([self.stoi_out[y] for y in y_data])
-        X = F.one_hot(x_tensor).float()
+        X = F.one_hot(x_tensor, num_classes=(len(self.charset) ** (self.n - 1))).float()
         # y = F.one_hot(y_tensor).float()
+        # print(f"X shape {X.shape} y shape {y_tensor.shape} W shape {self.W.shape}")
         loss = None
         for i in range(epochs):
             probs = self._nn_forward(X)
-            loss = -(probs[x_tensor, y_tensor]).log().mean()
+            loss = (
+                -(probs[x_tensor, y_tensor]).log().mean() + beta * self.W.pow(2).mean()
+            )
             self.W.grad = None
             loss.backward()
             self.W.data += -lr * self.W.grad
             if verbose:
                 print(f"Epoch {i+1}: loss\t{loss}")
         self.loss = loss
+        # self.W[0,0].data = torch.log(torch.tensor(1.0))
 
     def _nn_forward(self, X: torch.Tensor):
         """
@@ -171,7 +183,7 @@ class GramModel:
             corpus (list): The corpus used for training.
             epochs (int, optional): The number of training epochs only used with self._method = 'nn'. Defaults to 100.
             lr (float, optional): The learning rate for training only used with self._method = 'nn'. Defaults to 0.1.
-            smooth_factor (float, optional): The smoothing factor for the counts only used with self._method = 'counts'. Defaults to 1.0.
+            smooth_factor (float, optional): The smoothing factor for the counts with self._method = 'counts' or the regularization factor of W in the neural network with self._method = 'nn'. Defaults to 1 and get multiplied by a factor of 0.01 if nn.
             verbose (int, optional): The verbosity level. Defaults to 1.
         """
 
@@ -191,10 +203,29 @@ class GramModel:
                 dtype=torch.float,
                 requires_grad=True,
             )
-            self._train_w_nn(ngrams, epochs, lr, verbose)
-        print(f"Here's the loss: {self.loss}")
+            self._train_w_nn(ngrams, epochs, lr, smooth_factor * 0.01, verbose)
         if verbose:
             print(f"Finised with loss: {self.loss}")
+
+    def calc_loss(self, corpus: list):
+        """
+        Calculate the loss of the model on the given corpus.
+
+        Args:
+            corpus (list): The corpus used for training.
+
+        Returns:
+            float: The loss of the model on the given corpus.
+        """
+
+        ngrams = self._get_ngrams(corpus)
+        x_data, y_data = map(list, zip(*ngrams))
+        x_tensor = torch.tensor([self.stoi_in[x] for x in x_data])
+        y_tensor = torch.tensor([self.stoi_out[y] for y in y_data])
+        X = F.one_hot(x_tensor, num_classes=(len(self.charset) ** (self.n - 1))).float()
+        probs = self._nn_forward(X)
+        loss = -(probs[x_tensor, y_tensor]).log().mean() #+ beta * self.W.pow(2).mean()
+        return loss
 
     def generateWords(self, n=10):
         """
@@ -214,7 +245,8 @@ class GramModel:
             word += inp
             while True:
                 inp_tensored = F.one_hot(
-                    torch.tensor(self.stoi_in[inp]), num_classes=len(self.itos_in)
+                    torch.tensor(self.stoi_in[inp]),
+                    num_classes=(len(self.charset) ** (self.n - 1)),
                 ).unsqueeze(0)
                 probs = self._nn_forward(inp_tensored.float())
                 word += self.itos_out[torch.multinomial(probs, 1).item()]
