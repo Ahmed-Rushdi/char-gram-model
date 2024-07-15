@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-torch.manual_seed(0)
+torch.manual_seed(767)
 
 
 class GramModel:
@@ -104,7 +104,7 @@ class GramModel:
             self.W[inp_i, outp_i].data += 1
         probs = self.W / self.W.sum(1, keepdim=True)
         nll = torch.tensor(0.0)
-        for gram in tqdm(ngrams, desc="calculating loss.."):
+        for gram in tqdm(ngrams, desc="Calculating loss.."):
             inp_i = self.stoi_in[gram[0]]
             outp_i = self.stoi_out[gram[1]]
             nll += probs[inp_i, outp_i].log()
@@ -195,3 +195,31 @@ class GramModel:
         print(f"Here's the loss: {self.loss}")
         if verbose:
             print(f"Finised with loss: {self.loss}")
+
+    def generateWords(self, n=10):
+        """
+        Generate n words using the trained model.
+
+        Args:
+            n (int, optional): The number of words to generate. Defaults to 10.
+
+        Returns:
+            list: The generated words.
+        """
+
+        words = []
+        for i in tqdm(range(n), "Generating Words.."):
+            word = []
+            inp = "." * (self.n - 1)
+            word += inp
+            while True:
+                inp_tensored = F.one_hot(
+                    torch.tensor(self.stoi_in[inp]), num_classes=len(self.itos_in)
+                ).unsqueeze(0)
+                probs = self._nn_forward(inp_tensored.float())
+                word += self.itos_out[torch.multinomial(probs, 1).item()]
+                inp = "".join(word[-(self.n - 1) :])
+                if word[-1] == ".":
+                    break
+            words.append("".join(word))
+        return words
