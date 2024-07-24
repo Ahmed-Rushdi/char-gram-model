@@ -207,7 +207,7 @@ class GramModel:
         if verbose:
             print(f"Finised with loss: {self.loss}")
 
-    def calc_loss(self, corpus: list):
+    def evaluate(self, corpus: list):
         """
         Calculate the loss of the model on the given corpus.
 
